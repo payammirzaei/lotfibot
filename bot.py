@@ -83,7 +83,6 @@ async def collect_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "html": msg.text_html or html.escape(msg.text),
         }
     )
-    await msg.reply_text(f"✓ Added #{len(session(context))}", reply_markup=KEYBOARD)
 
 
 async def collect_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -100,7 +99,6 @@ async def collect_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             "mime_type": "image/jpeg",
         }
     )
-    await msg.reply_text(f"✓ Added #{len(session(context))}", reply_markup=KEYBOARD)
 
 
 async def collect_image_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -117,7 +115,6 @@ async def collect_image_document(update: Update, context: ContextTypes.DEFAULT_T
             "mime_type": doc.mime_type or "image/jpeg",
         }
     )
-    await msg.reply_text(f"✓ Added #{len(session(context))}", reply_markup=KEYBOARD)
 
 
 def render_html(items: list[dict], asset_names: dict[int, str]) -> str:
