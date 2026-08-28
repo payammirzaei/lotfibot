@@ -27,29 +27,30 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     level=logging.INFO,
 )
+logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("lotfibot")
 
 
 def session(context: ContextTypes.DEFAULT_TYPE) -> list[dict]:
-    return context.user_data.setdefault("items", [])
+    return context.chat_data.setdefault("items", [])
 
 
 def reset_session(context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.user_data["items"] = []
+    context.chat_data["items"] = []
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reset_session(context)
     await update.effective_message.reply_text(
-        "Send or forward text and photos here.\n"
-        "When you're done, tap ⚡ Generate HTML and I'll return a ZIP.",
+        "Ready ✓\nSend or forward text and photos here.\n"
+        "When you're done, tap ⚡ Generate HTML.",
         reply_markup=KEYBOARD,
     )
 
 
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reset_session(context)
-    await update.effective_message.reply_text("Cleared. Send the new messages.", reply_markup=KEYBOARD)
+    await update.effective_message.reply_text("Cleared ✓", reply_markup=KEYBOARD)
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -57,63 +58,71 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     texts = sum(1 for x in items if x["type"] == "text")
     images = sum(1 for x in items if x["type"] == "image")
     await update.effective_message.reply_text(
-        f"Collected: {len(items)} items\n📝 Text: {texts}\n🖼 Images: {images}",
+        f"Collected: {len(items)}\n📝 Text: {texts}\n🖼 Images: {images}",
         reply_markup=KEYBOARD,
     )
 
 
-async def collect_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def collect(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
-    if not msg or not msg.text:
+    if not msg:
         return
 
-    if msg.text == BTN_GENERATE:
-        await generate(update, context)
-        return
-    if msg.text == BTN_CLEAR:
-        await clear(update, context)
-        return
-    if msg.text == BTN_STATUS:
-        await status(update, context)
-        return
+    if msg.text:
+        if msg.text == BTN_GENERATE:
+            await generate(update, context)
+            return
+        if msg.text == BTN_CLEAR:
+            await clear(update, context)
+            return
+        if msg.text == BTN_STATUS:
+            await status(update, context)
+            return
 
-    session(context).append(
-        {
-            "type": "text",
-            "html": msg.text_html or html.escape(msg.text),
-        }
-    )
+    item = None
 
-
-async def collect_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    msg = update.effective_message
-    if not msg or not msg.photo:
-        return
-
-    photo = msg.photo[-1]
-    session(context).append(
-        {
+    if msg.photo:
+        item = {
             "type": "image",
-            "file_id": photo.file_id,
+            "file_id": msg.photo[-1].file_id,
             "caption_html": msg.caption_html or (html.escape(msg.caption) if msg.caption else ""),
             "mime_type": "image/jpeg",
         }
-    )
+    elif msg.document and (msg.document.mime_type or "").startswith("image/"):
+        item = {
+            "type": "image",
+            "file_id": msg.document.file_id,
+            "caption_html": msg.caption_html or (html.escape(msg.caption) if msg.caption else ""),
+            "mime_type": msg.document.mime_type or "image/jpeg",
+        }
+    elif msg.text:
+        item = {
+            "type": "text",
+            "html": msg.text_html or html.escape(msg.text),
+        }
 
-
-async def collect_image_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    msg = update.effective_message
-    doc = msg.document if msg else None
-    if not doc or not (doc.mime_type or "").startswith("image/"):
+    if item:
+        items = session(context)
+        items.append(item)
+        log.info(
+            "collected chat=%s type=%s total=%s forwarded=%s",
+            update.effective_chat.id if update.effective_chat else None,
+            item["type"],
+            len(items),
+            bool(getattr(msg, "forward_origin", None)),
+        )
         return
 
-    session(context).append(
-        {
-            "type": "image",
-            "file_id": doc.file_id,
-            "caption_html": msg.caption_html or (html.escape(msg.caption) if msg.caption else ""),
-            "mime_type": doc.mime_type or "image/jpeg",
-        }
+    log.info(
+        "ignored chat=%s message_id=%s type=%s",
+        update.effective_chat.id if update.effective_chat else None,
+        getattr(msg, "message_id", None),
+        getattr(msg, "effective_attachment", None).__class__.__name__
+        if getattr(msg, "effective_attachment", None) is not None else "unknown",
+    )
+    await msg.reply_text(
+        "This message type isn't supported yet. Send/forward text or images.",
+        reply_markup=KEYBOARD,
     )
 
 
@@ -123,24 +132,21 @@ def render_html(items: list[dict], asset_names: dict[int, str]) -> str:
         n = i + 1
         if item["type"] == "text":
             blocks.append(
-                f'<article class="card text-card" data-index="{n}">'
-                f'<div class="content" dir="auto">{item["html"]}</div>'
-                f"</article>"
+                f'<article class="card"><div class="content" dir="auto">{item["html"]}</div></article>'
             )
         else:
             src = html.escape(asset_names[i], quote=True)
             caption = item.get("caption_html") or ""
             cap = f'<figcaption dir="auto">{caption}</figcaption>' if caption else ""
             blocks.append(
-                f'<article class="card image-card" data-index="{n}">'
-                f'<figure><img src="{src}" loading="lazy" alt="Image {n}">{cap}</figure>'
-                f"</article>"
+                f'<article class="card"><figure><img src="{src}" loading="lazy" alt="Image {n}">{cap}</figure></article>'
             )
 
     created = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     body = "\n".join(blocks)
+
     return f"""<!doctype html>
-<html lang="en" dir="auto">
+<html lang="fa" dir="auto">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -148,61 +154,47 @@ def render_html(items: list[dict], asset_names: dict[int, str]) -> str:
 <style>
 :root {{
   color-scheme: light dark;
-  --bg:#0b1020;
-  --panel:#121a2d;
-  --text:#eef3ff;
-  --muted:#93a4c7;
-  --line:rgba(255,255,255,.09);
-  --shadow:0 16px 50px rgba(0,0,0,.28);
+  --panel:#121a2d; --text:#eef3ff; --muted:#93a4c7; --line:rgba(255,255,255,.09);
 }}
 * {{ box-sizing:border-box; }}
-html {{ scroll-behavior:smooth; }}
 body {{
-  margin:0; background:linear-gradient(180deg,#0b1020 0%,#0d1426 100%);
-  color:var(--text); font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+  margin:0; background:linear-gradient(180deg,#0b1020,#0d1426);
+  color:var(--text); font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
 }}
-.wrap {{ width:min(920px,calc(100% - 28px)); margin:0 auto; padding:32px 0 64px; }}
-.hero {{
-  padding:28px; margin-bottom:18px; border:1px solid var(--line); border-radius:24px;
-  background:rgba(18,26,45,.78); backdrop-filter:blur(10px); box-shadow:var(--shadow);
+.wrap {{ width:min(920px,calc(100% - 28px)); margin:auto; padding:32px 0 64px; }}
+.hero,.card {{
+  border:1px solid var(--line); background:var(--panel); border-radius:22px;
+  box-shadow:0 10px 35px rgba(0,0,0,.18); overflow:hidden;
 }}
-h1 {{ margin:0 0 8px; font-size:clamp(28px,6vw,46px); letter-spacing:-.04em; }}
+.hero {{ padding:26px; margin-bottom:16px; }}
+h1 {{ margin:0 0 8px; font-size:clamp(28px,6vw,44px); }}
 .meta {{ color:var(--muted); font-size:14px; }}
 .feed {{ display:grid; gap:14px; }}
-.card {{
-  border:1px solid var(--line); border-radius:22px; background:var(--panel); overflow:hidden;
-  box-shadow:0 8px 30px rgba(0,0,0,.18);
-}}
 .content {{
-  padding:20px 22px; white-space:pre-wrap; unicode-bidi:plaintext; line-height:1.75;
-  font-size:17px; overflow-wrap:anywhere;
+  padding:20px 22px; white-space:pre-wrap; unicode-bidi:plaintext;
+  line-height:1.8; font-size:17px; overflow-wrap:anywhere;
 }}
-.content a, figcaption a {{ color:#7dd3fc; }}
 figure {{ margin:0; }}
-img {{ display:block; width:100%; height:auto; max-height:78vh; object-fit:contain; background:#080d18; }}
-figcaption {{
-  padding:16px 18px 18px; white-space:pre-wrap; unicode-bidi:plaintext; line-height:1.7;
-}}
-footer {{ margin-top:22px; text-align:center; color:var(--muted); font-size:13px; }}
-@media (prefers-color-scheme: light) {{
-  :root {{--bg:#f4f7fb;--panel:#fff;--text:#172033;--muted:#64748b;--line:rgba(15,23,42,.09);--shadow:0 14px 42px rgba(15,23,42,.08);}}
+img {{ display:block; width:100%; height:auto; max-height:82vh; object-fit:contain; background:#080d18; }}
+figcaption {{ padding:16px 20px 20px; white-space:pre-wrap; unicode-bidi:plaintext; line-height:1.8; }}
+a {{ color:#7dd3fc; }}
+footer {{ margin-top:20px; text-align:center; color:var(--muted); font-size:13px; }}
+@media (prefers-color-scheme:light) {{
+  :root {{ --panel:#fff; --text:#172033; --muted:#64748b; --line:rgba(15,23,42,.09); }}
   body {{ background:linear-gradient(180deg,#f7f9fc,#eef3f8); }}
-  .hero {{ background:rgba(255,255,255,.86); }}
   img {{ background:#f3f4f6; }}
-  .content a, figcaption a {{ color:#0369a1; }}
+  a {{ color:#0369a1; }}
 }}
 </style>
 </head>
 <body>
 <main class="wrap">
-  <section class="hero">
-    <h1>Chat Export</h1>
-    <div class="meta">{len(items)} items · Generated {created}</div>
-  </section>
-  <section class="feed">
-    {body}
-  </section>
-  <footer>Generated by Chat to HTML Bot</footer>
+<section class="hero">
+<h1>Chat Export</h1>
+<div class="meta">{len(items)} items · Generated {created}</div>
+</section>
+<section class="feed">{body}</section>
+<footer>Generated by Chat to HTML Bot</footer>
 </main>
 </body>
 </html>"""
@@ -211,11 +203,24 @@ footer {{ margin-top:22px; text-align:center; color:var(--muted); font-size:13px
 async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     items = list(session(context))
+
+    log.info(
+        "generate chat=%s count=%s",
+        update.effective_chat.id if update.effective_chat else None,
+        len(items),
+    )
+
     if not items:
-        await msg.reply_text("Nothing collected yet. Send or forward some messages first.", reply_markup=KEYBOARD)
+        await msg.reply_text(
+            "Nothing collected yet. Send or forward some messages first.",
+            reply_markup=KEYBOARD,
+        )
         return
 
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id,
+        action=ChatAction.UPLOAD_DOCUMENT,
+    )
     progress = await msg.reply_text(f"Building ZIP from {len(items)} items…")
 
     try:
@@ -243,7 +248,10 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 await tg_file.download_to_drive(custom_path=path)
                 asset_names[i] = f"assets/{name}"
 
-            (root / "index.html").write_text(render_html(items, asset_names), encoding="utf-8")
+            (root / "index.html").write_text(
+                render_html(items, asset_names),
+                encoding="utf-8",
+            )
 
             zip_path = Path(tmp) / "chat_export.zip"
             with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -260,19 +268,15 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 )
 
         reset_session(context)
-        await progress.delete()
+        try:
+            await progress.delete()
+        except Exception:
+            pass
     except Exception:
         log.exception("generation failed")
         await progress.edit_text(
-            "Generation failed. Your collected messages are still saved in this session, so you can try again."
+            "Generation failed. Messages are still in this session; try Generate again."
         )
-
-
-async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.effective_message.reply_text(
-        "I currently accept text, photos, and image files.",
-        reply_markup=KEYBOARD,
-    )
 
 
 def main() -> None:
@@ -280,10 +284,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear))
     app.add_handler(CommandHandler("status", status))
-    app.add_handler(MessageHandler(filters.PHOTO, collect_photo))
-    app.add_handler(MessageHandler(filters.Document.IMAGE, collect_image_document))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, collect_text))
-    app.add_handler(MessageHandler(~filters.COMMAND, unknown))
+    app.add_handler(MessageHandler(~filters.COMMAND, collect))
     log.info("Bot starting with long polling")
     app.run_polling(drop_pending_updates=False)
 
